@@ -12,18 +12,25 @@ to Moss, this can help in identifying which students have multiple similar
 solutions.
 """
 
+import argparse
+import datetime
+import os
 import re
 import sys
-import os
-import datetime
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from itertools import chain
+from typing import Iterable, Optional
+
 import pydot
 import argparse
 import requests as r
 
 from bs4 import BeautifulSoup
 from faker import Faker
-from collections import defaultdict, Counter
-from itertools import chain
+
+Url = str
+Color = str
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('urls', metavar='URL', nargs='*',
@@ -64,14 +71,14 @@ parser.add_argument('--title', dest='title', type=str, default='',
                     help='Title to be inserted in the final image')
 
 
-class Results:
-    def __init__(self, name, matches):
+class File:
+    def __init__(self, name: str, percent: int | float):
         self.name = name
-        self.matches = matches
+        self.percent = percent
 
 
 class Match:
-    def __init__(self, first, second, lines, url):
+    def __init__(self, first: File, second: File, lines: int, url: Url):
         self.first = first
         self.second = second
         self.lines = lines
@@ -82,13 +89,20 @@ class Match:
         return max(self.first.percent, self.second.percent)
 
 
-class File:
-    def __init__(self, name, percent):
+class Results:
+    def __init__(self, name: str, matches: list[Match]):
         self.name = name
-        self.percent = percent
+        self.matches = matches
 
 
-class Filter:
+@dataclass
+class Filter():
+
+    filter: Optional[set[str]] = field(default=None)
+    filteri: Optional[set[str]] = field(default=None)
+    filterx: Optional[set[str]] = field(default=None)
+    filterxi: Optional[set[str]] = field(default=None)
+
     def __init__(self):
         filters = ['filter', 'filteri', 'filterx', 'filterxi']
         for f in filters:
@@ -98,7 +112,7 @@ class Filter:
             if getattr(args, f) != None:
                 setattr(self, f, set(getattr(args, f)))
 
-    def include(self, match):
+    def include(self, match: Match) -> bool:
         first = match.first.name
         second = match.second.name
         if (self.filter is not None and (first not in self.filter or second not
@@ -143,13 +157,13 @@ def random_names(length):
     return names
 
 
-def link_color(ratio):
+def link_color(ratio: float) -> Color:
     high = 0xE9, 0x01, 0x01
     low = 0xFF, 0xE3, 0x05
 
     # Normalized ratio
     if args.min_percent != 100:
-        min_ratio = args.min_percent / 100
+        min_ratio: float = args.min_percent / 100
         ratio = (ratio - min_ratio) / (1 - min_ratio)
 
     color = [h * ratio + l * (1 - ratio) for h, l in zip(high, low)]
@@ -169,8 +183,11 @@ def anonymize(matches):
         m.second.name = new_names[m.second.name]
 
 
-def generate_report(results):
-    pairs = defaultdict(list)
+def generate_report(results: Iterable[Results]) -> None:
+
+    pairs: defaultdict[tuple[str, str],
+                       list[tuple[str, Match]]] = defaultdict(list)
+
     for res in results:
         for match in res.matches:
             pairs[(match.first.name, match.second.name)].append((res.name, match))
@@ -181,7 +198,7 @@ def generate_report(results):
         base = '+'.join(map(lambda x: x.name, results))
     filename = '%s.txt' % base
 
-    with open(filename, 'w') as f:
+    with open(filename, 'w', encoding='utf8') as f:
         for pair, matches in sorted(pairs.items(),
                                     key=lambda x: (len(x[1]), sorted(map(lambda x: x[0], x[1]))), reverse=True):
             f.write('Pair: %s and %s\n' % pair)
@@ -191,20 +208,20 @@ def generate_report(results):
             f.write('\n\n')
 
 
-def merge_filter(matches):
+def merge_filter(matches: Iterable[Match]) -> list[Match]:
     pairs = [tuple(sorted([match.first.name, match.second.name])) for match in matches]
     intereseting = {pair for pair, count in Counter(
         pairs).items() if count >= args.min_matches}
     return [match for match in matches if tuple(sorted([match.first.name, match.second.name])) in intereseting]
 
 
-def merge_results(results):
+def merge_results(results: Iterable[Results]) -> Results:
     name = '+'.join(map(lambda x: x.name, results))
     matches = merge_filter(list(chain(*map(lambda x: x.matches, results))))
     return Results(name, matches)
 
 
-def get_results(moss_url):
+def get_results(moss_url: Url) -> Results:
     resp = r.get(moss_url)
     soup = BeautifulSoup(resp.content.decode('utf-8'), 'html5lib')
 
@@ -231,7 +248,7 @@ def get_results(moss_url):
     return Results(name, matches)
 
 
-def image(results, index=None, label=None):
+def image(results: Results, index: Optional[int] = None, label: Optional[str] = None) -> None:
     graph = pydot.Dot(label=label, graph_type='graph')
 
     print('Generating image for %s' % results.name)
@@ -270,14 +287,17 @@ def image(results, index=None, label=None):
 
 
 def main():
+
     global args
     args = parser.parse_args()
 
-    urls = args.urls
+    urls: list[Url] = args.urls
+
     if not urls:
         urls = sys.stdin.read().splitlines()
 
     all_res = []
+
     for x in urls:
         res = get_results(x)
         all_res.append(res)
